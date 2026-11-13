@@ -27,7 +27,6 @@ jobs:
       DATABASE_URL: postgresql://offerme:offerme_ci_only@127.0.0.1:5432/offerme_dev
       BETTER_AUTH_SECRET: offerme-ci-only-secret-at-least-32-characters
       NODE_ENV: test
-      PG_TOOL_CONTAINER: ${{ job.services.postgres.id }}
       NEXT_TELEMETRY_DISABLED: "1"
     steps:
       - uses: actions/checkout@v4
@@ -44,6 +43,8 @@ jobs:
         working-directory: website
       - run: npm run typecheck && npm test && npm run build && npm run contracts
         working-directory: backend
+        env:
+          PG_TOOL_CONTAINER: ${{ job.services.postgres.id }}
       - run: git diff --exit-code -- backend/contracts website/src/lib/api-schema.d.ts app/api-schema.d.ts
       - run: npm run typecheck && npm run test:unit && npm run check:locales && npm run build
         working-directory: website
