@@ -15,7 +15,13 @@
     "db:stop": "node scripts/local-db.mjs stop",
     "db:migrate": "tsx scripts/migrate.ts",
     "test": "tsx --test tests/*.test.ts",
-    "contracts": "tsx scripts/contracts.ts"
+    "contracts": "tsx scripts/contracts.ts",
+    "worker": "tsx src/worker.ts",
+    "worker:start": "node dist/src/worker.js",
+    "account:erase": "tsx scripts/erase-account.ts",
+    "backup": "tsx scripts/backup.ts",
+    "restore": "tsx scripts/backup.ts --restore",
+    "account:recover": "tsx scripts/recover-account.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1162.0",
@@ -32,6 +38,7 @@
     "express": "^5.1.0",
     "express-rate-limit": "^8.0.0",
     "helmet": "^8.1.0",
+    "otpauth": "^9.6.0",
     "pg": "^8.16.3",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.2",
@@ -44,6 +51,8 @@
     "@types/multer": "^2.0.0",
     "@types/node": "^24.0.0",
     "@types/pg": "^8.15.0",
+    "openapi-typescript": "^7.10.0",
+    "socket.io-client": "^4.8.4",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   }

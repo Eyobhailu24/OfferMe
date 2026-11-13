@@ -1,5 +1,7 @@
+import { extraWords } from "./extra-words";
 import type { Locale } from "./types";
 export const words = {
+  ...extraWords,
   browse: ["Explore", "ያስሱ", "Sakatta’i"],
   sell: ["Sell an item", "ዕቃ ይሽጡ", "Meeshaa gurguri"],
   saved: ["Saved", "የተቀመጡ", "Kuufaman"],
@@ -151,3 +153,29 @@ export const words = {
 export type Word = keyof typeof words;
 export const translate = (locale: Locale, word: string) =>
   words[word as Word]?.[locale === "am" ? 1 : locale === "om" ? 2 : 0] ?? word;
+
+export function formatError(locale: Locale, message: string) {
+  if (locale === "en") return message;
+  const lower = message.toLowerCase();
+  let key = "generalError";
+  if (
+    /attributes|subcategory|too small|too big|invalid input|required field/.test(
+      lower,
+    )
+  )
+    key = "genericValidation";
+  else if (/price|amount/.test(lower)) key = "invalidPrice";
+  else if (
+    /otp|code.*invalid|invalid.*code|expired.*code|code.*expired/.test(lower)
+  )
+    key = "invalidCode";
+  else if (/location|neighborhood|latitude|longitude/.test(lower))
+    key = "locationError";
+  else if (/photo|image|upload/.test(lower)) key = "photoError";
+  else if (/display name/.test(lower)) key = "profileRequired";
+  else if (/connect|timeout|timed out|network|fetch/.test(lower))
+    key = "connectionError";
+  else if (/unavailable|no longer|not found|blocked/.test(lower))
+    key = "unavailableAction";
+  return translate(locale, key);
+}

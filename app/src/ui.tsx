@@ -1,3 +1,5 @@
+import { formatError } from "../locale";
+import { useState } from "react";
 import type { ReactNode } from "react";
 import {
   ActivityIndicator,
@@ -209,11 +211,14 @@ export function ErrorBox({
   error: unknown;
   retry?: () => void;
 }) {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   return (
     <View style={{ gap: 8 }}>
       <Text accessibilityRole="alert" style={s.error}>
-        {error instanceof Error ? error.message : "Something went wrong."}
+        {formatError(
+          locale,
+          error instanceof Error ? error.message : "Something went wrong.",
+        )}
       </Text>
       {retry && <Button title={t("retry")} onPress={retry} secondary />}
     </View>
@@ -273,6 +278,7 @@ export function Gate({ children }: { children: ReactNode }) {
   return children;
 }
 export function ListingCard({ item }: { item: Listing }) {
+  const [fallback, setFallback] = useState(false);
   const { t } = useLocale();
   return (
     <Pressable
@@ -282,7 +288,14 @@ export function ListingCard({ item }: { item: Listing }) {
       style={{ flex: 1, gap: 8, maxWidth: "50%", padding: 6 }}
     >
       <Image
-        source={{ uri: imageUrl(item.images[0]) }}
+        source={{
+          uri: imageUrl(
+            fallback
+              ? item.images[0]
+              : item.images[0]?.replace(/\.webp$/, ".thumb.webp"),
+          ),
+        }}
+        onError={() => setFallback(true)}
         style={s.photo}
         accessibilityLabel={item.title}
       />

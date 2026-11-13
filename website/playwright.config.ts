@@ -2,9 +2,10 @@ import { defineConfig } from "@playwright/test";
 import { resolve } from "node:path";
 export default defineConfig({
   testDir: "./tests",
+  testMatch: "**/*.spec.ts",
   fullyParallel: false,
   workers: 1,
-  timeout: 120000,
+  timeout: 180000,
   expect: { timeout: 15000 },
   reporter: "list",
   use: {

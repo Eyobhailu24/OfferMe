@@ -1,0 +1,10 @@
+# Supply real approved domains. Caddy obtains and renews HTTPS certificates.
+{$WEB_DOMAIN} {
+    reverse_proxy 127.0.0.1:3100
+}
+{$API_DOMAIN} {
+    request_body {
+        max_size 9MB
+    }
+    reverse_proxy 127.0.0.1:4100
+}

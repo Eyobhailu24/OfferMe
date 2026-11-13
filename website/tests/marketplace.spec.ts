@@ -61,13 +61,21 @@ test("seller posts; buyer finds, saves, chats, offers and arranges a meetup", as
     ctx.fillRect(75, 35, 90, 170);
     return canvas.toDataURL("image/png").split(",")[1];
   });
-  await page
-    .getByLabel("Add photos")
-    .setInputFiles({
-      name: "phone.png",
-      mimeType: "image/png",
-      buffer: Buffer.from(png, "base64"),
-    });
+  await expect(page.getByLabel("Add photos")).toBeAttached();
+  await page.context().setOffline(true);
+  await page.getByLabel("Add photos").setInputFiles({
+    name: "phone.png",
+    mimeType: "image/png",
+    buffer: Buffer.from(png, "base64"),
+  });
+  await expect(
+    page.getByText("Photos waiting to upload", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Try again", exact: true }),
+  ).toBeEnabled({ timeout: 25000 });
+  await page.context().setOffline(false);
+  await page.getByRole("button", { name: "Try again", exact: true }).click();
   await expect(page.getByAltText("Listing photo 1")).toBeVisible();
   await page
     .getByLabel("Title", { exact: true })
@@ -75,6 +83,24 @@ test("seller posts; buyer finds, saves, chats, offers and arranges a meetup", as
   await page
     .getByRole("combobox", { name: "Category", exact: true })
     .selectOption("phones");
+  await page
+    .getByRole("combobox", { name: "Subcategory", exact: true })
+    .selectOption("smartphones");
+  await page.getByLabel("Model", { exact: true }).fill("Test phone model");
+  await page
+    .getByLabel("Battery condition", { exact: true })
+    .fill("Holds a charge");
+  await page
+    .getByRole("combobox", { name: "Lock status", exact: true })
+    .selectOption("unlocked");
+  await page.reload();
+  await expect(page.getByLabel("Title", { exact: true })).toHaveValue(
+    "Browser test secondhand phone",
+  );
+  await expect(page.getByLabel("Model", { exact: true })).toHaveValue(
+    "Test phone model",
+  );
+  await expect(page.getByAltText("Listing photo 1")).toBeVisible();
   await page
     .getByRole("combobox", { name: "Condition", exact: true })
     .selectOption("good");
@@ -122,6 +148,10 @@ test("seller posts; buyer finds, saves, chats, offers and arranges a meetup", as
       ),
     )
     .toBe(true);
+  buyer.once("dialog", (d) => d.accept("Phone search"));
+  await buyer
+    .getByRole("button", { name: "Save this search", exact: true })
+    .click();
   await buyer.screenshot({
     path: testInfo.outputPath("browse-mobile.png"),
     fullPage: true,
@@ -148,12 +178,39 @@ test("seller posts; buyer finds, saves, chats, offers and arranges a meetup", as
   await expect(buyer.locator(".bubble")).toContainText(
     "Hello, can I inspect the phone in Bole?",
   );
+  await buyerContext.setOffline(true);
+  await buyer
+    .getByRole("textbox", { name: "Write a message" })
+    .fill("This message survives a connection failure.");
+  await buyer.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(
+    buyer.getByText("Pending - saved on this device", { exact: true }),
+  ).toBeVisible();
+  await buyer
+    .getByRole("textbox", { name: "Write a message" })
+    .fill("A second offline message.");
+  await buyer.getByRole("button", { name: "Send", exact: true }).click();
+  await expect(
+    buyer.getByText("Pending - saved on this device", { exact: true }),
+  ).toHaveCount(2);
+  await buyerContext.setOffline(false);
+  await expect(
+    buyer.getByText("Pending - saved on this device", { exact: true }),
+  ).toHaveCount(0);
+  await buyer.reload();
+  await expect(
+    buyer
+      .locator(".bubble")
+      .filter({ hasText: "This message survives a connection failure." }),
+  ).toHaveCount(1);
   await buyer
     .getByRole("button", { name: "Make an offer", exact: true })
     .click();
   await buyer.getByLabel("Price (Br)", { exact: true }).fill("2400");
   await buyer.getByRole("button", { name: "Submit", exact: true }).click();
-  await expect(buyer.locator(".event-card")).toContainText("2,400 Br");
+  await expect(
+    buyer.locator(".event-card").filter({ hasText: "2,400 Br" }),
+  ).toContainText("2,400 Br");
   await page.goto(threadUrl);
   await page.getByRole("button", { name: "Accept", exact: true }).click();
   await expect(page.locator(".event-card .badge")).toHaveText("Accepted");
@@ -178,14 +235,55 @@ test("seller posts; buyer finds, saves, chats, offers and arranges a meetup", as
   await expect(
     page.locator(".event-card").filter({ hasText: "Public cafe" }),
   ).toContainText("Confirmed");
-  await page.goto("/account");
+  await page
+    .getByRole("button", {
+      name: "Reserve for this buyer for 24 hours",
+      exact: true,
+    })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Cancel reservation", exact: true }),
+  ).toBeVisible();
   page.once("dialog", (d) => d.accept());
-  await page.getByRole("button", { name: "Mark as sold", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Mark sold to this buyer", exact: true })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "Mark sold to this buyer", exact: true }),
+  ).toHaveCount(0);
+  await page.goto("/account");
   await expect(page.locator(".manage-item .badge")).toHaveText("Sold");
+  await buyer.goto("/account");
+  buyer.once("dialog", (d) => d.accept());
+  await buyer
+    .getByRole("button", { name: "Confirm completed exchange", exact: true })
+    .click();
+  await buyer
+    .getByLabel("Your review", { exact: true })
+    .fill("Great inspection and meetup.");
+  await buyer
+    .getByRole("button", { name: "Submit review", exact: true })
+    .click();
+  await expect(
+    buyer.getByText("Review submitted", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    buyer.getByRole("link", { name: "Phone search", exact: true }),
+  ).toBeVisible();
+  const download = buyer.waitForEvent("download");
+  await buyer
+    .getByRole("button", { name: "Export my data", exact: true })
+    .click();
+  expect((await download).suggestedFilename()).toBe(
+    "offerme-account-export.json",
+  );
   await buyer.goto(itemUrl);
   await expect(
     buyer.getByRole("button", { name: "Message seller", exact: true }),
   ).toBeDisabled();
+  await expect(
+    buyer.getByText("Great inspection and meetup.", { exact: true }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
   await expect(page).toHaveURL("http://127.0.0.1:3101/");
   expect(errors).toEqual([]);

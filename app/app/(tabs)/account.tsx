@@ -1,3 +1,4 @@
+import * as SecureStore from "expo-secure-store";
 import { useState } from "react";
 import { Alert, Image, Text, View } from "react-native";
 import { router } from "expo-router";
@@ -16,15 +17,22 @@ import {
   Screen,
   s,
 } from "../../src/ui";
+import { AccountTools } from "../../src/account-tools";
+import { unregisterPush } from "../../src/notifications";
+import { outbox } from "../../src/outbox";
+import { Sales } from "../../src/exchanges";
 export default function Account() {
   const { locale, setLocale, t } = useLocale();
   const user = useUser();
   const cache = useQueryClient();
   const signout = useMutation({
     mutationFn: async () => {
+      await unregisterPush();
       const result = await auth.signOut();
       if (result.error)
         throw new Error(result.error.message || "Please try again.");
+      await SecureStore.deleteItemAsync("offerme-profile-cache");
+      outbox.activate(undefined);
       cache.clear();
       router.replace("/");
     },
@@ -46,6 +54,8 @@ export default function Account() {
           <>
             <Profile key={user.data.id} name={user.data.name} />
             <Mine />
+            <Sales />
+            <AccountTools />
             <Button
               title={t("signout")}
               secondary
@@ -139,21 +149,17 @@ function Mine() {
                   onPress={() => router.push("/edit/" + l.id)}
                 />
                 <Button
-                  title={t("markSold")}
+                  title={t("markOutside")}
                   disabled={change.isPending}
                   onPress={() =>
-                    Alert.alert(
-                      t("markSold"),
-                      "Sold listings cannot be reopened.",
-                      [
-                        { text: t("cancel"), style: "cancel" },
-                        {
-                          text: t("confirm"),
-                          onPress: () =>
-                            change.mutate({ id: l.id, status: "sold" }),
-                        },
-                      ],
-                    )
+                    Alert.alert(t("markOutside"), t("confirmSold"), [
+                      { text: t("cancel"), style: "cancel" },
+                      {
+                        text: t("confirm"),
+                        onPress: () =>
+                          change.mutate({ id: l.id, status: "sold" }),
+                      },
+                    ])
                   }
                 />
                 <Button
@@ -167,19 +173,6 @@ function Mine() {
                     })
                   }
                 />
-                {["active", "reserved"].includes(l.status) && (
-                  <Button
-                    title={t(l.status === "active" ? "reserved" : "restore")}
-                    secondary
-                    disabled={change.isPending}
-                    onPress={() =>
-                      change.mutate({
-                        id: l.id,
-                        status: l.status === "active" ? "reserved" : "active",
-                      })
-                    }
-                  />
-                )}
               </>
             )}
           </View>

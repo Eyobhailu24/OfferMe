@@ -2,7 +2,7 @@ import { useState } from "react";
 import { Text, View, KeyboardAvoidingView, Platform } from "react-native";
 import { router } from "expo-router";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { auth, phoneNumber } from "../src/api";
+import { api, auth, phoneNumber } from "../src/api";
 import { useLocale } from "../src/provider";
 import { Button, Field, ErrorBox, Screen, s } from "../src/ui";
 export default function SignIn() {
@@ -20,7 +20,12 @@ export default function SignIn() {
       if (result.error)
         throw new Error(result.error.message || "Please try again.");
       if (sent) {
-        await cache.invalidateQueries({ queryKey: ["me"] });
+        await cache.cancelQueries();
+        cache.clear();
+        await cache.fetchQuery({
+          queryKey: ["me"],
+          queryFn: () => api("/v1/me"),
+        });
         router.replace("/account");
       } else setSent(true);
     },

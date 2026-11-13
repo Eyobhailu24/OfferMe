@@ -1,4 +1,6 @@
 "use client";
+import { formatError } from "@/lib/locale";
+
 import Link from "next/link";
 import { Search, ArrowRight, MapPin, Heart, ShieldCheck } from "lucide-react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -13,10 +15,13 @@ export function ErrorBox({
   error: unknown;
   retry?: () => void;
 }) {
-  const { t } = useLocale();
+  const { t, locale } = useLocale();
   return (
     <div role="alert" className="error-box">
-      {error instanceof Error ? error.message : "Could not load this page."}
+      {formatError(
+        locale,
+        error instanceof Error ? error.message : "Could not load this page.",
+      )}
       {retry && <button onClick={retry}>{t("retry")}</button>}
     </div>
   );
@@ -109,7 +114,18 @@ export function Cards({
         <article className="listing-card" key={item.id}>
           <div className="card-photo">
             <Link href={"/items/" + item.id}>
-              <img src={item.images[0]} alt={item.title} loading="lazy" />
+              <img
+                src={item.images[0]?.replace(/\.webp$/, ".thumb.webp")}
+                onError={(e) => {
+                  const image = e.currentTarget;
+                  if (!image.dataset.fallback) {
+                    image.dataset.fallback = "1";
+                    image.src = item.images[0];
+                  }
+                }}
+                alt={item.title}
+                loading="lazy"
+              />
             </Link>
             <SaveButton id={item.id} saved={savedIds.includes(item.id)} />
             {item.status !== "active" && (
@@ -124,7 +140,7 @@ export function Cards({
             <MapPin size={13} />
             {item.neighborhood} <span>· {t(item.condition)}</span>
           </p>
-          {item.demo && <small>Demonstration listing</small>}
+          {item.demo && <small>{t("demo")}</small>}
         </article>
       ))}
     </div>

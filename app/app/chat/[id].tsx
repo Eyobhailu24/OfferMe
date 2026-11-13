@@ -1,15 +1,19 @@
-import { useRef, useState } from "react";
+import { ReportControl } from "../../src/report-control";
+import { outbox, useOutbox } from "../../src/outbox";
+import { TradeActions } from "../../src/exchanges";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
+  AppState,
   KeyboardAvoidingView,
   Platform,
   Text,
   View,
 } from "react-native";
-import { router, useLocalSearchParams } from "expo-router";
+import { router, useLocalSearchParams, useFocusEffect } from "expo-router";
 import * as Crypto from "expo-crypto";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, money } from "../../src/api";
+import { api, money, parsePrice } from "../../src/api";
 import type { Thread } from "../../types";
 import { useLocale, useUser } from "../../src/provider";
 import { useLive } from "../../src/live";
@@ -36,9 +40,11 @@ function Chat({ id }: { id: string }) {
   const user = useUser();
   useLive(user.data?.id);
   const cache = useQueryClient();
+  const queued = useOutbox(user.data?.id, id);
   const [body, setBody] = useState("");
   const [mode, setMode] = useState<"offer" | "meetup" | null>(null);
   const [amount, setAmount] = useState("");
+  const [previousId, setPreviousId] = useState<string | undefined>();
   const [place, setPlace] = useState("");
   const [date, setDate] = useState("");
   const [time, setTime] = useState("");
@@ -66,23 +72,28 @@ function Chat({ id }: { id: string }) {
     }) => api(path, method, data),
     onSuccess: async () => {
       setMode(null);
+      setPreviousId(undefined);
       await refresh();
     },
   });
   const send = useMutation({
-    mutationFn: () => {
-      if (!pending.current || pending.current.body !== body)
-        pending.current = { body, clientId: Crypto.randomUUID() };
-      return api(
-        "/v1/conversations/" + id + "/messages",
-        "POST",
-        pending.current,
-      );
+    networkMode: "always",
+    mutationFn: async () => {
+      if (!user.data) throw new Error("Sign in to send a message.");
+      outbox.enqueue({
+        clientId: Crypto.randomUUID(),
+        conversationId: id,
+        userId: user.data.id,
+        body: body.trim(),
+        createdAt: new Date().toISOString(),
+        status: "pending",
+      });
+      void outbox.flush().then(refresh);
     },
     onSuccess: async () => {
       setBody("");
       pending.current = null;
-      await refresh();
+      void refresh();
     },
   });
   const previous = useMutation({
@@ -105,21 +116,30 @@ function Chat({ id }: { id: string }) {
         if (!amount.trim() || !Number.isFinite(n) || n <= 0)
           throw new Error("Enter a positive price.");
         return api("/v1/conversations/" + id + "/offers", "POST", {
-          amountMinor: Math.round(n * 100),
+          amountMinor: parsePrice(amount),
+          previousId,
         });
       }
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{2}:\d{2}$/.test(time))
         throw new Error("Use YYYY-MM-DD and HH:MM in Addis Ababa time.");
       const scheduled = new Date(date + "T" + time + ":00+03:00");
-      if (!Number.isFinite(scheduled.getTime()))
+      if (
+        !Number.isFinite(scheduled.getTime()) ||
+        new Date(scheduled.getTime() + 3 * 3600000)
+          .toISOString()
+          .slice(0, 16) !==
+          date + "T" + time
+      )
         throw new Error("Choose a valid date and time.");
       return api("/v1/conversations/" + id + "/meetups", "POST", {
         place,
         scheduledAt: scheduled.toISOString(),
+        previousId,
       });
     },
     onSuccess: async () => {
       setMode(null);
+      setPreviousId(undefined);
       await refresh();
     },
   });
@@ -129,7 +149,35 @@ function Chat({ id }: { id: string }) {
       method: "PATCH",
       data: { status },
     });
-  if (thread.isPending) return <Loading />;
+  const lastMessage = thread.data?.messages.at(-1)?.id;
+  useFocusEffect(
+    useCallback(() => {
+      const read = () => {
+        if (!lastMessage || AppState.currentState !== "active") return;
+        void api("/v1/conversations/" + id + "/read", "PATCH", {
+          messageId: lastMessage,
+        }).catch(() => {});
+      };
+      read();
+      const listener = AppState.addEventListener("change", read);
+      return () => listener.remove();
+    }, [id, lastMessage]),
+  );
+
+  if (thread.isPending)
+    return (
+      <Screen>
+        <Loading />
+        {queued.map((m) => (
+          <View key={m.clientId} style={s.card}>
+            <Text style={s.body}>{m.body}</Text>
+            <Text style={s.muted}>
+              {t(m.status === "failed" ? "failedMessage" : "queued")}
+            </Text>
+          </View>
+        ))}
+      </Screen>
+    );
   if (thread.error)
     return (
       <Screen>
@@ -154,6 +202,11 @@ function Chat({ id }: { id: string }) {
         <View style={s.hero}>
           <Text style={s.muted}>{t("safety")}</Text>
         </View>
+        <TradeActions thread={data} />
+        <ReportControl
+          userId={data.buyerId === user.data?.id ? data.sellerId : data.buyerId}
+          messages={messages}
+        />
         {data.hasEarlier && hasOlder && (
           <Button
             title={t("more")}
@@ -194,6 +247,28 @@ function Chat({ id }: { id: string }) {
             </Text>
           </View>
         ))}
+        {queued
+          .filter((m) => !data.messages.some((x) => x.clientId === m.clientId))
+          .map((m) => (
+            <View key={m.clientId} style={s.card}>
+              <Text style={s.body}>{m.body}</Text>
+              <Text style={s.muted}>
+                {t(m.status === "failed" ? "failedMessage" : "queued")}
+              </Text>
+              <Button
+                title={t("retry")}
+                secondary
+                onPress={() => {
+                  void outbox.retry(m).then(refresh);
+                }}
+              />
+              <Button
+                title={t("delete")}
+                secondary
+                onPress={() => outbox.discard(m)}
+              />
+            </View>
+          ))}
         {data.offers.map((o) => (
           <View key={o.id} style={s.card}>
             <Text style={s.h2}>
@@ -215,6 +290,14 @@ function Chat({ id }: { id: string }) {
                     title={t("accept")}
                     disabled={action.isPending}
                     onPress={() => change("/offers/" + o.id, "accepted")}
+                  />
+                  <Button
+                    title={t("counter")}
+                    secondary
+                    onPress={() => {
+                      setPreviousId(o.id);
+                      setMode("offer");
+                    }}
                   />
                   <Button
                     title={t("decline")}
@@ -245,6 +328,28 @@ function Chat({ id }: { id: string }) {
                     onPress={() => change("/meetups/" + m.id, "confirmed")}
                   />
                 )}
+                {["proposed", "confirmed"].includes(m.status) && (
+                  <Button
+                    title={t("reschedule")}
+                    secondary
+                    onPress={() => {
+                      setPreviousId(m.id);
+                      setMode("meetup");
+                      setPlace(m.place);
+                    }}
+                  />
+                )}
+                {m.status === "confirmed" &&
+                  Date.parse(m.scheduledAt) <= Date.now() && (
+                    <Button
+                      title={t("noShow")}
+                      secondary
+                      disabled={action.isPending}
+                      onPress={() =>
+                        change("/meetups/" + m.id, "no_show_reported")
+                      }
+                    />
+                  )}
                 {["proposed", "confirmed"].includes(m.status) && (
                   <Button
                     title={t("cancel")}
@@ -278,12 +383,18 @@ function Chat({ id }: { id: string }) {
               <Button
                 title={t("offer")}
                 secondary
-                onPress={() => setMode(mode === "offer" ? null : "offer")}
+                onPress={() => (
+                  setPreviousId(undefined),
+                  setMode(mode === "offer" ? null : "offer")
+                )}
               />
               <Button
                 title={t("meetup")}
                 secondary
-                onPress={() => setMode(mode === "meetup" ? null : "meetup")}
+                onPress={() => (
+                  setPreviousId(undefined),
+                  setMode(mode === "meetup" ? null : "meetup")
+                )}
               />
             </View>
             {mode && (

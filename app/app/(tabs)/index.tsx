@@ -1,6 +1,9 @@
-import { useState } from "react";
+import * as Location from "expo-location";
+import { useLocalSearchParams } from "expo-router";
+import { SaveSearch } from "../../src/save-search";
+import { useEffect, useState } from "react";
 import { FlatList, Text, View } from "react-native";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { api } from "../../src/api";
 import type { Catalog, Page } from "../../types";
 import { useLocale } from "../../src/provider";
@@ -17,7 +20,11 @@ import {
 export default function Browse() {
   const { t, locale } = useLocale();
   const [q, setQ] = useState("");
+  const [cursors, setCursors] = useState<(string | null)[]>([null]);
   const [filters, setFilters] = useState({
+    latitude: "",
+    longitude: "",
+    radiusKm: "10",
     q: "",
     category: "",
     neighborhood: "",
@@ -28,6 +35,50 @@ export default function Browse() {
     page: 1,
   });
   const [expanded, setExpanded] = useState(false);
+  const { savedSearch } = useLocalSearchParams<{ savedSearch?: string }>();
+  useEffect(() => {
+    if (!savedSearch) return;
+    let alive = true;
+    void api<{
+      items: { id: string; filters: Record<string, string | number> }[];
+    }>("/v1/saved-searches")
+      .then((result) => {
+        const found = result.items.find((s) => s.id === savedSearch);
+        if (found && alive) {
+          const restored = Object.fromEntries(
+            Object.entries(found.filters).map(([k, v]) => [
+              k,
+              ["min", "max"].includes(k) ? String(Number(v) / 100) : String(v),
+            ]),
+          );
+          setFilters((f) => ({ ...f, ...restored, page: 1 }));
+          setQ(String(found.filters.q || ""));
+        }
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [savedSearch]);
+  const locate = useMutation({
+    mutationFn: async () => {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (permission.status !== "granted")
+        throw new Error(
+          "Location permission was not granted. Select a neighborhood manually.",
+        );
+      const point = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      setCursors([null]);
+      setFilters((f) => ({
+        ...f,
+        latitude: String(point.coords.latitude),
+        longitude: String(point.coords.longitude),
+        page: 1,
+      }));
+    },
+  });
   const catalog = useQuery({
     queryKey: ["catalog"],
     queryFn: () => api<Catalog>("/v1/catalog"),
@@ -43,12 +94,16 @@ export default function Browse() {
           : String(v),
       ]),
   );
+  if (cursors[filters.page - 1])
+    search.set("cursor", cursors[filters.page - 1]!);
   const listings = useQuery({
     queryKey: ["listings", search.toString()],
     queryFn: () => api<Page>("/v1/listings?" + search),
   });
-  const update = (key: string, value: string) =>
-    setFilters((f) => ({ ...f, [key]: value, page: 1 }));
+  const update = (key: string, value: string) => (
+    setCursors([null]),
+    setFilters((f) => ({ ...f, [key]: value, page: 1 }))
+  );
   return (
     <FlatList
       style={s.screen}
@@ -69,6 +124,29 @@ export default function Browse() {
             <Text style={s.heading}>{t("hero")}</Text>
             <Text style={s.muted}>{t("heroText")}</Text>
           </View>
+          <Button
+            title={t("nearby")}
+            secondary
+            disabled={locate.isPending}
+            onPress={() => locate.mutate()}
+          />
+          {locate.error && <ErrorBox error={locate.error} />}
+          {filters.latitude && (
+            <Button
+              title={t("removeLocation")}
+              secondary
+              onPress={() => {
+                setCursors([null]);
+                setFilters((f) => ({
+                  ...f,
+                  latitude: "",
+                  longitude: "",
+                  page: 1,
+                }));
+              }}
+            />
+          )}
+          <SaveSearch query={search} />
           <Field
             label={t("search")}
             value={q}
@@ -149,7 +227,11 @@ export default function Browse() {
                 secondary
                 onPress={() => {
                   setQ("");
+                  setCursors([null]);
                   setFilters({
+                    latitude: "",
+                    longitude: "",
+                    radiusKm: "10",
                     q: "",
                     category: "",
                     neighborhood: "",
@@ -192,7 +274,13 @@ export default function Browse() {
               title={t("more")}
               secondary
               disabled={!listings.data.hasMore}
-              onPress={() => setFilters((f) => ({ ...f, page: f.page + 1 }))}
+              onPress={() => (
+                setCursors((c) => [
+                  ...c.slice(0, filters.page),
+                  listings.data?.nextCursor || null,
+                ]),
+                setFilters((f) => ({ ...f, page: f.page + 1 }))
+              )}
             />
           </View>
         ) : undefined

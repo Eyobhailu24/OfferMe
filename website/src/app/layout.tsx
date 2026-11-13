@@ -3,6 +3,7 @@ import { Providers } from "@/components/provider";
 import { Shell } from "@/components/shell";
 import "./globals.css";
 export const metadata: Metadata = {
+  metadataBase: new URL(process.env.SITE_URL || "http://127.0.0.1:3100"),
   title: {
     default: "OFFERME — Your neighborhood marketplace in Addis Ababa",
     template: "%s | OFFERME",
@@ -16,9 +17,6 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <a className="skip" href="#main">
-          Skip to content
-        </a>
         <Providers>
           <Shell>{children}</Shell>
         </Providers>

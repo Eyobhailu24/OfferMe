@@ -1,0 +1,7 @@
+**/node_modules
+**/.local
+**/dist
+**/.next
+**/api-schema.d.ts
+backend/contracts
+**/package-lock.json

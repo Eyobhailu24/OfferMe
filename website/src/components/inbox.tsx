@@ -1,10 +1,15 @@
 "use client";
+import { ReportControl } from "./report-control";
+
+import { outbox, useOutbox } from "@/lib/outbox";
+
+import { TradeActions } from "./exchanges";
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { io } from "socket.io-client";
 import { MessageCircle, Send, CalendarDays } from "lucide-react";
-import { api, money } from "@/lib/api";
+import { api, money, parsePrice } from "@/lib/api";
 import type { Conversation, Thread } from "@/lib/types";
 import { useLocale, useUser } from "./provider";
 import { AuthGate, Empty, ErrorBox, Loading } from "./ui";
@@ -24,6 +29,10 @@ export function Inbox({ id }: { id?: string }) {
       process.env.NEXT_PUBLIC_SOCKET_URL || "http://127.0.0.1:4100",
       { withCredentials: true },
     );
+    socket.on("connect", () => {
+      void cache.invalidateQueries({ queryKey: ["thread"] });
+      void cache.invalidateQueries({ queryKey: ["conversations"] });
+    });
     socket.on("conversation.updated", () => {
       void cache.invalidateQueries({ queryKey: ["conversations"] });
       void cache.invalidateQueries({ queryKey: ["thread"] });
@@ -59,6 +68,11 @@ export function Inbox({ id }: { id?: string }) {
                     <strong>{c.otherName}</strong>
                     <span>{c.title}</span>
                     <small>{c.lastMessage || t("message")}</small>
+                    {c.unreadCount > 0 && (
+                      <small>
+                        {t("unread")}: {c.unreadCount}
+                      </small>
+                    )}
                   </div>
                 </Link>
               ))
@@ -92,9 +106,11 @@ function Chat({
   const { t } = useLocale();
   const user = useUser();
   const cache = useQueryClient();
+  const queued = useOutbox(user.data?.id, id);
   const [body, setBody] = useState("");
   const [mode, setMode] = useState<"offer" | "meetup" | null>(null);
   const [amount, setAmount] = useState("");
+  const [previousId, setPreviousId] = useState<string | undefined>();
   const [place, setPlace] = useState("");
   const [time, setTime] = useState("");
   const [older, setOlder] = useState<Thread["messages"]>([]);
@@ -121,23 +137,28 @@ function Chat({
     }) => api(path, method, data),
     onSuccess: async () => {
       setMode(null);
+      setPreviousId(undefined);
       await refresh();
     },
   });
   const send = useMutation({
-    mutationFn: () => {
-      if (!retryMessage.current || retryMessage.current.body !== body)
-        retryMessage.current = { body, clientId: crypto.randomUUID() };
-      return api(
-        "/v1/conversations/" + id + "/messages",
-        "POST",
-        retryMessage.current,
-      );
+    networkMode: "always",
+    mutationFn: async () => {
+      if (!user.data) throw new Error("Sign in to send a message.");
+      outbox.enqueue({
+        clientId: crypto.randomUUID(),
+        conversationId: id,
+        userId: user.data.id,
+        body: body.trim(),
+        createdAt: new Date().toISOString(),
+        status: "pending",
+      });
+      void outbox.flush().then(refresh);
     },
     onSuccess: async () => {
       setBody("");
       retryMessage.current = null;
-      await refresh();
+      void refresh();
     },
   });
   const previous = useMutation({
@@ -159,6 +180,19 @@ function Chat({
       method: "PATCH",
       data: { status },
     });
+  const lastMessage = thread.data?.messages.at(-1)?.id;
+  useEffect(() => {
+    const read = () => {
+      if (!lastMessage || document.visibilityState !== "visible") return;
+      void api("/v1/conversations/" + id + "/read", "PATCH", {
+        messageId: lastMessage,
+      }).catch(() => {});
+    };
+    read();
+    document.addEventListener("visibilitychange", read);
+    return () => document.removeEventListener("visibilitychange", read);
+  }, [id, lastMessage]);
+
   if (thread.isPending) return <Loading />;
   if (thread.error)
     return <ErrorBox error={thread.error} retry={() => thread.refetch()} />;
@@ -192,6 +226,11 @@ function Chat({
           {t("block")}
         </button>
       </header>
+      <TradeActions thread={data} />
+      <ReportControl
+        userId={data.buyerId === user.data?.id ? data.sellerId : data.buyerId}
+        messages={messages}
+      />
       <p className="chat-safety">{t("safety")}</p>
       <div className="chat-body" aria-live="polite">
         {data.hasEarlier && hasOlder && (
@@ -211,6 +250,24 @@ function Chat({
             <time>{new Date(m.createdAt).toLocaleString()}</time>
           </div>
         ))}
+        {queued
+          .filter((m) => !data.messages.some((x) => x.clientId === m.clientId))
+          .map((m) => (
+            <div key={m.clientId} className="bubble mine">
+              <p>{m.body}</p>
+              <p role="status">
+                {t(m.status === "failed" ? "failedMessage" : "queued")}
+              </p>
+              <button
+                onClick={() => {
+                  void outbox.retry(m).then(refresh);
+                }}
+              >
+                {t("retry")}
+              </button>
+              <button onClick={() => outbox.discard(m)}>{t("delete")}</button>
+            </div>
+          ))}
         {data.offers.map((o) => (
           <div className="event-card" key={o.id}>
             <strong>
@@ -233,6 +290,15 @@ function Chat({
                       onClick={() => change("/offers/" + o.id, "accepted")}
                     >
                       {t("accept")}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPreviousId(o.id);
+                        setMode("offer");
+                      }}
+                    >
+                      {t("counter")}
                     </button>
                     <button
                       disabled={action.isPending}
@@ -270,6 +336,29 @@ function Chat({
                 )}
                 {["proposed", "confirmed"].includes(m.status) && (
                   <button
+                    type="button"
+                    onClick={() => {
+                      setPreviousId(m.id);
+                      setMode("meetup");
+                      setPlace(m.place);
+                    }}
+                  >
+                    {t("reschedule")}
+                  </button>
+                )}
+                {m.status === "confirmed" &&
+                  Date.parse(m.scheduledAt) <= Date.now() && (
+                    <button
+                      disabled={action.isPending}
+                      onClick={() =>
+                        change("/meetups/" + m.id, "no_show_reported")
+                      }
+                    >
+                      {t("noShow")}
+                    </button>
+                  )}
+                {["proposed", "confirmed"].includes(m.status) && (
+                  <button
                     disabled={action.isPending}
                     onClick={() => change("/meetups/" + m.id, "cancelled")}
                   >
@@ -298,11 +387,19 @@ function Chat({
       ) : (
         <div className="composer">
           <div className="button-row">
-            <button onClick={() => setMode(mode === "offer" ? null : "offer")}>
+            <button
+              onClick={() => (
+                setPreviousId(undefined),
+                setMode(mode === "offer" ? null : "offer")
+              )}
+            >
               {t("offer")}
             </button>
             <button
-              onClick={() => setMode(mode === "meetup" ? null : "meetup")}
+              onClick={() => (
+                setPreviousId(undefined),
+                setMode(mode === "meetup" ? null : "meetup")
+              )}
             >
               {t("meetup")}
             </button>
@@ -315,13 +412,14 @@ function Chat({
                 if (mode === "offer")
                   action.mutate({
                     path: "/v1/conversations/" + id + "/offers",
-                    data: { amountMinor: Math.round(Number(amount) * 100) },
+                    data: { amountMinor: parsePrice(amount), previousId },
                   });
                 else
                   action.mutate({
                     path: "/v1/conversations/" + id + "/meetups",
                     data: {
                       place,
+                      previousId,
                       scheduledAt: new Date(time + ":00+03:00").toISOString(),
                     },
                   });

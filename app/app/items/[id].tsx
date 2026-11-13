@@ -1,5 +1,6 @@
+import { Reputation } from "../../src/exchanges";
 import { useState } from "react";
-import { Image, Pressable, ScrollView, Text, View } from "react-native";
+import { Share, Image, Pressable, ScrollView, Text, View } from "react-native";
 import { router, useLocalSearchParams } from "expo-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, imageUrl, money } from "../../src/api";
@@ -12,6 +13,7 @@ export default function Detail() {
   const user = useUser();
   const cache = useQueryClient();
   const [photo, setPhoto] = useState(0);
+  const [shareError, setShareError] = useState<Error | null>(null);
   const [report, setReport] = useState(false);
   const [reason, setReason] = useState("");
   const item = useQuery({
@@ -79,6 +81,22 @@ export default function Detail() {
         {t(l.negotiable ? "negotiable" : "firm")} · {t(l.condition)}
       </Text>
       <Text style={s.body}>{l.neighborhood}, Addis Ababa</Text>
+      <Button
+        title={t("share")}
+        secondary
+        onPress={() => {
+          void Share.share({
+            message:
+              (process.env.EXPO_PUBLIC_WEB_URL || "http://127.0.0.1:3100") +
+              "/items/" +
+              id,
+            title: l.title,
+          }).catch((e) => setShareError(e));
+        }}
+      />
+      {shareError && <ErrorBox error={shareError} />}
+      <Text style={s.muted}>{t("verificationNotice")}</Text>
+      <Reputation userId={l.sellerId} />
       <View style={s.card}>
         <Text style={s.h2}>{l.sellerName}</Text>
         {l.sellerPhoneVerified && (
@@ -116,6 +134,11 @@ export default function Detail() {
       <Text style={s.body}>{l.description}</Text>
       <Text style={s.h2}>{t("defects")}</Text>
       <Text style={s.body}>{l.defects}</Text>
+      {Object.entries(l.attributes).map(([key, value]) => (
+        <Text key={key} style={s.body}>
+          {t(key)}: {t(value)}
+        </Text>
+      ))}
       <Button
         title={t("report")}
         secondary

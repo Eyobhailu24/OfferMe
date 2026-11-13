@@ -6,6 +6,8 @@ import { api, money } from "@/lib/api";
 import type { Listing } from "@/lib/types";
 import { useLocale, useUser, SignOut } from "./provider";
 import { AuthGate, Empty, ErrorBox, Loading } from "./ui";
+import { AccountTools, SupportQueue, AdminVerification } from "./account-tools";
+import { Sales } from "./exchanges";
 export function Account() {
   const { t } = useLocale();
   const user = useUser();
@@ -18,7 +20,17 @@ export function Account() {
         </div>
         {user.data && <Profile key={user.data.id} name={user.data.name} />}
         <MyListings />
-        {user.data?.admin && <Moderation />}
+        <Sales />
+        <AccountTools />
+        {user.data?.admin &&
+          (user.data.adminMfaRequired && !user.data.adminVerified ? (
+            <AdminVerification />
+          ) : (
+            <>
+              <Moderation />
+              <SupportQueue />
+            </>
+          ))}
       </div>
     </AuthGate>
   );
@@ -106,15 +118,11 @@ function MyListings() {
                   <button
                     disabled={update.isPending}
                     onClick={() => {
-                      if (
-                        window.confirm(
-                          t("markSold") + "? This cannot be undone.",
-                        )
-                      )
+                      if (window.confirm(t("confirmSold")))
                         update.mutate({ id: l.id, status: "sold" });
                     }}
                   >
-                    {t("markSold")}
+                    {t("markOutside")}
                   </button>
                   <button
                     disabled={update.isPending}
@@ -127,16 +135,6 @@ function MyListings() {
                   >
                     {t(l.status === "archived" ? "restore" : "archive")}
                   </button>
-                  {l.status === "active" && (
-                    <button
-                      disabled={update.isPending}
-                      onClick={() =>
-                        update.mutate({ id: l.id, status: "reserved" })
-                      }
-                    >
-                      {t("reserved")}
-                    </button>
-                  )}
                   {l.status === "reserved" && (
                     <button
                       disabled={update.isPending}
@@ -157,6 +155,8 @@ function MyListings() {
   );
 }
 function Moderation() {
+  const [selectedCase, setSelectedCase] = useState<string | null>(null);
+  const { t } = useLocale();
   const cache = useQueryClient();
   const reports = useQuery({
     queryKey: ["reports"],
@@ -165,6 +165,7 @@ function Moderation() {
         items: {
           id: string;
           listingId?: string;
+          listingStatus?: string;
           reason: string;
           status: string;
         }[];
@@ -177,15 +178,19 @@ function Moderation() {
   });
   return (
     <section>
-      <h2>Moderation</h2>
+      <h2>{t("moderation")}</h2>
+      {selectedCase && <ReportDetails id={selectedCase} />}
       {action.error && <ErrorBox error={action.error} />}{" "}
       {reports.error && <ErrorBox error={reports.error} />}{" "}
       {reports.data?.items.map((r) => (
         <article className="event-card" key={r.id}>
           <p>{r.reason}</p>
+          <button onClick={() => setSelectedCase(r.id)}>
+            {t("caseDetails")}
+          </button>
           <span>{r.status}</span>
           {r.listingId && (
-            <Link href={"/items/" + r.listingId}>View listing</Link>
+            <Link href={"/items/" + r.listingId}>{t("viewListing")}</Link>
           )}
           {r.status === "open" && (
             <div className="button-row">
@@ -200,20 +205,33 @@ function Moderation() {
                     })
                   }
                 >
-                  {status}
+                  {t(status)}
                 </button>
               ))}
               {r.listingId && (
                 <button
                   disabled={action.isPending}
                   onClick={() => {
-                    if (window.confirm("Remove this listing?"))
+                    if (
+                      window.confirm(
+                        t(
+                          r.listingStatus === "removed"
+                            ? "restore"
+                            : "removeListing",
+                        ),
+                      )
+                    )
                       action.mutate({
-                        path: "/v1/admin/listings/" + r.listingId,
+                        path:
+                          "/v1/admin/listings/" +
+                          r.listingId +
+                          (r.listingStatus === "removed" ? "/restore" : ""),
                       });
                   }}
                 >
-                  Remove listing
+                  {t(
+                    r.listingStatus === "removed" ? "restore" : "removeListing",
+                  )}
                 </button>
               )}
             </div>
@@ -221,5 +239,72 @@ function Moderation() {
         </article>
       ))}
     </section>
+  );
+}
+
+function ReportDetails({ id }: { id: string }) {
+  const action = useMutation({
+    mutationFn: ({
+      reviewId,
+      hidden,
+      reason,
+    }: {
+      reviewId: string;
+      hidden: boolean;
+      reason: string;
+    }) => api("/v1/admin/reviews/" + reviewId, "PATCH", { hidden, reason }),
+  });
+  const { t } = useLocale();
+  const query = useQuery({
+    queryKey: ["report-case", id],
+    queryFn: () =>
+      api<{
+        reason: string;
+        reviewId: string | null;
+        reportedName: string | null;
+        messageBody: string | null;
+        reviewBody: string | null;
+      }>("/v1/admin/reports/" + id),
+  });
+  return (
+    <article className="event-card">
+      <h3>{t("caseDetails")}</h3>
+      {query.data && (
+        <>
+          <strong>{query.data.reportedName}</strong>
+          <p>{query.data.reason}</p>
+          {query.data.messageBody && (
+            <blockquote>{query.data.messageBody}</blockquote>
+          )}
+          {query.data.reviewId && (
+            <div className="button-row">
+              {[true, false].map((hidden) => (
+                <button
+                  disabled={action.isPending}
+                  key={String(hidden)}
+                  onClick={() => {
+                    const reason = window.prompt(t("reason"));
+                    if (reason && reason.trim().length >= 10)
+                      action.mutate({
+                        reviewId: query.data!.reviewId!,
+                        hidden,
+                        reason,
+                      });
+                  }}
+                >
+                  {t(hidden ? "hideReview" : "restoreReview")}
+                </button>
+              ))}
+            </div>
+          )}
+          {query.data.reviewBody && (
+            <blockquote>{query.data.reviewBody}</blockquote>
+          )}
+        </>
+      )}
+      {(query.error || action.error) && (
+        <ErrorBox error={query.error || action.error} />
+      )}
+    </article>
   );
 }

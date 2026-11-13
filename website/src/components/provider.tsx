@@ -15,10 +15,11 @@ import {
 import { api, ApiError } from "@/lib/api";
 import { translate } from "@/lib/locale";
 import type { Locale, User } from "@/lib/types";
+import { LocalSync } from "./sync";
 const Context = createContext({
   locale: "en" as Locale,
   setLocale: (_locale: Locale) => {},
-  t: (key: string) => key,
+  t: (key: string) => translate("en", key),
 });
 export const useLocale = () => useContext(Context);
 export const useUser = () =>
@@ -61,6 +62,7 @@ export function Providers({ children }: { children: ReactNode }) {
       <Context.Provider
         value={{ locale, setLocale, t: (key) => translate(locale, key) }}
       >
+        <LocalSync />
         {children}
       </Context.Provider>
     </QueryClientProvider>

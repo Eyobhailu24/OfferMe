@@ -20,3 +20,12 @@
 **/*.keystore
 **/backups/
 **/.cache/
+
+**/credentials.json
+**/google-services.json
+**/GoogleService-Info.plist
+**/service-account*.json
+**/*.jks
+**/*.mobileprovision
+
+website/next-env.d.ts

@@ -1,4 +1,12 @@
 "use client";
+import {
+  usePendingPhotos,
+  keepPhoto,
+  listPhotos,
+  removePhoto,
+} from "@/lib/photo-queue";
+import { useDraft } from "@/lib/persistence";
+import { Reputation } from "./exchanges";
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -12,19 +20,22 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { api, money } from "@/lib/api";
+import { api, money, parsePrice } from "@/lib/api";
 import type { Listing, Catalog } from "@/lib/types";
 import { useLocale, useUser } from "./provider";
 import { AuthGate, ErrorBox, Loading, SaveButton } from "./ui";
-export function Detail({ id }: { id: string }) {
+export function Detail({ id, initial }: { id: string; initial?: Listing }) {
   const { t } = useLocale();
   const user = useUser();
   const router = useRouter();
   const [photo, setPhoto] = useState(0);
+  const [shareError, setShareError] = useState<Error | null>(null);
+  const [copied, setCopied] = useState(false);
   const [report, setReport] = useState(false);
   const [reason, setReason] = useState("");
   const item = useQuery({
     queryKey: ["listing", id],
+    initialData: initial,
     queryFn: () => api<Listing>("/v1/listings/" + id),
   });
   const saved = useQuery({
@@ -77,6 +88,14 @@ export function Detail({ id }: { id: string }) {
             <p className="preserve">{l.description}</p>
             <h3>{t("defects")}</h3>
             <p className="preserve">{l.defects}</p>
+            <dl>
+              {Object.entries(l.attributes).map(([key, value]) => (
+                <div key={key}>
+                  <dt>{t(key)}</dt>
+                  <dd>{t(value)}</dd>
+                </div>
+              ))}
+            </dl>
           </div>
         </section>
         <aside className="item-info">
@@ -93,6 +112,7 @@ export function Detail({ id }: { id: string }) {
               {t("condition")}: {t(l.condition)}
             </span>
           </div>
+          <Reputation userId={l.sellerId} />
           <div className="seller">
             <span className="avatar">{l.sellerName?.slice(0, 1)}</span>
             <div>
@@ -167,7 +187,7 @@ export function Sell({ id }: { id?: string }) {
   const user = useUser();
   const item = useQuery({
     queryKey: ["listing", id],
-    queryFn: () => api<Listing>("/v1/listings/" + id),
+    queryFn: () => api<Listing>("/v1/listings/" + id + "/edit"),
     enabled: !!id && !!user.data,
   });
   return (
@@ -177,7 +197,10 @@ export function Sell({ id }: { id?: string }) {
       ) : item.error ? (
         <ErrorBox error={item.error} />
       ) : (
-        <ListingForm key={id || "new"} initial={item.data} />
+        <ListingForm
+          key={user.data?.id + ":" + (id || "new")}
+          initial={item.data}
+        />
       )}
     </AuthGate>
   );
@@ -192,10 +215,25 @@ function ListingForm({ initial }: { initial?: Listing }) {
     queryFn: () => api<Catalog>("/v1/catalog"),
     staleTime: Infinity,
   });
-  const [images, setImages] = useState(initial?.images || []);
+  const draftKey =
+    "offerme:draft:" + user.data!.id + ":" + (initial?.id || "new");
+  const pendingPhotos = usePendingPhotos(draftKey);
+  const imageDraft = useDraft<string[]>(
+    draftKey + ":photos",
+    initial?.images || [],
+  );
+  const images = imageDraft.value,
+    setImages = imageDraft.setValue;
+  const identity = useDraft(draftKey + ":identity", crypto.randomUUID());
+  const clientId = identity.value;
+  const [locationError, setLocationError] = useState<Error | null>(null);
   const [imageError, setImageError] = useState<Error | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [draft, setDraft] = useState({
+  const savedDraft = useDraft(draftKey, {
+    latitude: initial?.latitude as number | null | undefined,
+    longitude: initial?.longitude as number | null | undefined,
+    subcategory: initial?.subcategory || "",
+    attributes: initial?.attributes || ({} as Record<string, string>),
     title: initial?.title || "",
     description: initial?.description || "",
     defects: initial?.defects || "",
@@ -205,19 +243,47 @@ function ListingForm({ initial }: { initial?: Listing }) {
     neighborhood: initial?.neighborhood || "",
     negotiable: initial?.negotiable ?? true,
   });
+  const draft = savedDraft.value,
+    setDraft = savedDraft.setValue;
   const update = (key: string, value: string | boolean) =>
-    setDraft((d) => ({ ...d, [key]: value }));
+    setDraft((d) => ({
+      ...d,
+      [key]: value,
+      ...(key === "categoryId" ? { subcategory: "", attributes: {} } : {}),
+    }));
+  const selectedCategory = catalog.data?.categories.find(
+    (c) => c.id === draft.categoryId,
+  );
+  const attribute = (key: string, value: string) =>
+    setDraft((d) => ({ ...d, attributes: { ...d.attributes, [key]: value } }));
   const publish = useMutation({
+    networkMode: "always",
     mutationFn: () => {
+      if (pendingPhotos.photos.length)
+        throw new Error("Finish or remove pending photo uploads first.");
       if (!images.length) throw new Error("Add at least one photo.");
       const { price, ...rest } = draft;
       return api<{ id: string }>(
         "/v1/listings" + (initial ? "/" + initial.id : ""),
         initial ? "PATCH" : "POST",
-        { ...rest, priceMinor: Math.round(Number(price) * 100), images },
+        {
+          ...rest,
+          expectedSellerId: user.data!.id,
+          priceMinor: parsePrice(price),
+          images,
+          ...(!initial ? { clientId } : {}),
+        },
       );
     },
     onSuccess: async (r) => {
+      savedDraft.clear();
+      imageDraft.clear();
+      identity.clear();
+      if (!initial) {
+        savedDraft.reset();
+        imageDraft.reset();
+        identity.reset(crypto.randomUUID());
+      }
       await cache.invalidateQueries({ queryKey: ["listings"] });
       await cache.invalidateQueries({ queryKey: ["mine"] });
       await cache.invalidateQueries({ queryKey: ["listing", r.id] });
@@ -225,28 +291,43 @@ function ListingForm({ initial }: { initial?: Listing }) {
     },
   });
   async function upload(files: FileList | null) {
-    if (!files) return;
+    if (uploading) return;
     setImageError(null);
-    if (images.length + files.length > 12) {
-      setImageError(new Error("Choose up to 12 photos."));
-      return;
-    }
     setUploading(true);
     try {
-      for (const file of Array.from(files)) {
-        if (file.size > 8 * 1024 * 1024)
-          throw new Error("Photos must be under 8 MB.");
-        const body = new FormData();
-        body.append("file", file);
-        const r = await api<{ url: string }>("/v1/media", "POST", body);
-        setImages((v) => [...v, r.url]);
+      if (files) {
+        if (images.length + pendingPhotos.photos.length + files.length > 12)
+          throw new Error("Choose up to 12 photos.");
+        for (const file of Array.from(files)) {
+          if (file.size > 8 * 1024 * 1024)
+            throw new Error("Photos must be under 8 MB.");
+          await keepPhoto(draftKey, file);
+        }
       }
-    } catch (e) {
-      setImageError(e as Error);
+      for (const photo of await listPhotos(draftKey)) {
+        const body = new FormData();
+        body.append("clientId", photo.id);
+        body.append("expectedOwnerId", user.data!.id);
+        body.append("file", photo.file);
+        const response = await api<{ url: string }>("/v1/media", "POST", body);
+        setImages((items) =>
+          items.includes(response.url) ? items : [...items, response.url],
+        );
+        await removePhoto(photo.id);
+      }
+    } catch (error) {
+      setImageError(error as Error);
     } finally {
       setUploading(false);
     }
   }
+  if (
+    !savedDraft.ready ||
+    !imageDraft.ready ||
+    !identity.ready ||
+    !pendingPhotos.ready
+  )
+    return <Loading />;
   if (
     initial &&
     (initial.sellerId !== user.data?.id ||
@@ -256,9 +337,28 @@ function ListingForm({ initial }: { initial?: Listing }) {
   return (
     <div className="form-page">
       <div className="form-heading">
-        <p className="eyebrow">A NEW CHAPTER FOR YOUR THINGS</p>
+        <p className="eyebrow">{t("newChapter")}</p>
         <h1>{t(initial ? "edit" : "sell")}</h1>
         <p>{t("noDelivery")}</p>
+        {!savedDraft.error && !imageDraft.error && !pendingPhotos.error && (
+          <p role="status">{t("draftSaved")}</p>
+        )}
+        <button
+          type="button"
+          onClick={() => {
+            if (window.confirm(t("discardDraft"))) {
+              for (const p of pendingPhotos.photos) void removePhoto(p.id);
+              savedDraft.reset();
+              imageDraft.reset();
+              identity.reset(crypto.randomUUID());
+            }
+          }}
+        >
+          {t("discardDraft")}
+        </button>
+        {(savedDraft.error || imageDraft.error) && (
+          <ErrorBox error={savedDraft.error || imageDraft.error} />
+        )}
       </div>
       <form
         className="listing-form"
@@ -271,7 +371,7 @@ function ListingForm({ initial }: { initial?: Listing }) {
           <h2>
             01 <span>{t("photos")}</span>
           </h2>
-          <p className="muted">JPG, PNG, WebP · 8 MB · 1–12</p>
+          <p className="muted">{t("photoFormats")}</p>
           <div className="photo-editor">
             {images.map((src, i) => (
               <div key={src}>
@@ -293,7 +393,9 @@ function ListingForm({ initial }: { initial?: Listing }) {
                 type="file"
                 accept="image/jpeg,image/png,image/webp"
                 multiple
-                disabled={uploading || images.length >= 12}
+                disabled={
+                  uploading || images.length + pendingPhotos.photos.length >= 12
+                }
                 onChange={(e) => {
                   void upload(e.target.files);
                   e.target.value = "";
@@ -301,7 +403,36 @@ function ListingForm({ initial }: { initial?: Listing }) {
               />
             </label>
           </div>
-          {imageError && <ErrorBox error={imageError} />}
+          {pendingPhotos.photos.map((photo) => (
+            <div className="event-card" key={photo.id}>
+              <p>
+                {t("photosPending")}: {photo.file.name}
+              </p>
+              <button
+                type="button"
+                disabled={uploading}
+                onClick={() => {
+                  void removePhoto(photo.id);
+                }}
+              >
+                {t("delete")}
+              </button>
+            </div>
+          ))}
+          {!!pendingPhotos.photos.length && (
+            <button
+              type="button"
+              disabled={uploading}
+              onClick={() => {
+                void upload(null);
+              }}
+            >
+              {t("retry")}
+            </button>
+          )}
+          {(imageError || pendingPhotos.error) && (
+            <ErrorBox error={imageError || pendingPhotos.error} />
+          )}
         </section>
         <section>
           <h2>
@@ -347,6 +478,51 @@ function ListingForm({ initial }: { initial?: Listing }) {
               </select>
             </label>
           </div>
+          {selectedCategory && (
+            <>
+              <label>
+                {t("subcategory")}
+                <select
+                  required
+                  value={draft.subcategory}
+                  onChange={(e) => update("subcategory", e.target.value)}
+                >
+                  <option value="">-</option>
+                  {selectedCategory.subcategories.map((v) => (
+                    <option value={v} key={v}>
+                      {t(v)}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {selectedCategory.fields.map((field) => (
+                <label key={field.id}>
+                  {t(field.id)}
+                  {field.options ? (
+                    <select
+                      required
+                      value={draft.attributes[field.id] || ""}
+                      onChange={(e) => attribute(field.id, e.target.value)}
+                    >
+                      <option value="">-</option>
+                      {field.options.map((v) => (
+                        <option key={v} value={v}>
+                          {t(v)}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      required
+                      maxLength={250}
+                      value={draft.attributes[field.id] || ""}
+                      onChange={(e) => attribute(field.id, e.target.value)}
+                    />
+                  )}
+                </label>
+              ))}
+            </>
+          )}
           <label>
             {t("description")}
             <textarea
@@ -402,6 +578,40 @@ function ListingForm({ initial }: { initial?: Listing }) {
               </select>
             </label>
           </div>
+          <button
+            type="button"
+            onClick={() =>
+              navigator.geolocation
+                ? navigator.geolocation.getCurrentPosition(
+                    (point) =>
+                      setDraft((d) => ({
+                        ...d,
+                        latitude: point.coords.latitude,
+                        longitude: point.coords.longitude,
+                      })),
+                    () =>
+                      setLocationError(
+                        new Error(
+                          "Location permission was not granted. Select a neighborhood manually.",
+                        ),
+                      ),
+                  )
+                : setLocationError(new Error("Select a neighborhood manually."))
+            }
+          >
+            {t("useLocation")}
+          </button>
+          {locationError && <ErrorBox error={locationError} />}{" "}
+          {draft.latitude != null && (
+            <button
+              type="button"
+              onClick={() =>
+                setDraft((d) => ({ ...d, latitude: null, longitude: null }))
+              }
+            >
+              {t("removeLocation")}
+            </button>
+          )}
           <label className="checkbox">
             <input
               type="checkbox"
@@ -418,7 +628,13 @@ function ListingForm({ initial }: { initial?: Listing }) {
         {publish.error && <ErrorBox error={publish.error} />}
         <button
           className="button primary wide"
-          disabled={publish.isPending || uploading || !catalog.data}
+          disabled={
+            publish.isPending ||
+            uploading ||
+            !!pendingPhotos.photos.length ||
+            !!pendingPhotos.error ||
+            !catalog.data
+          }
         >
           {publish.isPending ? t("loading") : t(initial ? "save" : "publish")}
         </button>

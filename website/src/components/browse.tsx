@@ -1,5 +1,5 @@
 "use client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import Link from "next/link";
 import {
@@ -22,6 +22,7 @@ import { api } from "@/lib/api";
 import type { Catalog, Page, Listing } from "@/lib/types";
 import { useLocale, useUser } from "./provider";
 import { Cards, Empty, ErrorBox, Loading, AuthGate } from "./ui";
+import { SaveSearch } from "./save-search";
 const icons: Record<string, typeof Shapes> = {
   phones: Smartphone,
   furniture: Armchair,
@@ -36,7 +37,12 @@ export function Browse() {
   const { t, locale } = useLocale();
   const user = useUser();
   const [q, setQ] = useState("");
+  const [locationError, setLocationError] = useState<Error | null>(null);
+  const [cursors, setCursors] = useState<(string | null)[]>([null]);
   const [filters, setFilters] = useState({
+    latitude: "",
+    longitude: "",
+    radiusKm: "10",
     q: "",
     category: "",
     neighborhood: "",
@@ -46,6 +52,25 @@ export function Browse() {
     sort: "recent",
     page: 1,
   });
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (!params.size) return;
+    setFilters((f) => ({
+      ...f,
+      ...Object.fromEntries(
+        ["q", "category", "neighborhood", "condition", "min", "max"]
+          .filter((k) => params.has(k))
+          .map((k) => [
+            k,
+            ["min", "max"].includes(k)
+              ? String(Number(params.get(k)) / 100)
+              : params.get(k)!,
+          ]),
+      ),
+      page: 1,
+    }));
+    setQ(params.get("q") || "");
+  }, []);
   const catalog = useQuery({
     queryKey: ["catalog"],
     queryFn: () => api<Catalog>("/v1/catalog"),
@@ -61,6 +86,8 @@ export function Browse() {
           : String(v),
       ]),
   );
+  if (cursors[filters.page - 1])
+    query.set("cursor", cursors[filters.page - 1]!);
   const listings = useQuery({
     queryKey: ["listings", query.toString()],
     queryFn: () => api<Page>("/v1/listings?" + query),
@@ -70,10 +97,49 @@ export function Browse() {
     queryFn: () => api<{ items: Listing[] }>("/v1/favorites"),
     enabled: !!user.data,
   });
-  const update = (key: string, value: string) =>
-    setFilters((f) => ({ ...f, [key]: value, page: 1 }));
+  const update = (key: string, value: string) => (
+    setCursors([null]),
+    setFilters((f) => ({ ...f, [key]: value, page: 1 }))
+  );
   return (
     <div className="page">
+      <button
+        onClick={() =>
+          navigator.geolocation
+            ? navigator.geolocation.getCurrentPosition(
+                (point) => {
+                  setCursors([null]);
+                  setFilters((f) => ({
+                    ...f,
+                    latitude: String(point.coords.latitude),
+                    longitude: String(point.coords.longitude),
+                    page: 1,
+                  }));
+                },
+                () =>
+                  setLocationError(
+                    new Error(
+                      "Location permission was not granted. Select a neighborhood manually.",
+                    ),
+                  ),
+              )
+            : setLocationError(new Error("Select a neighborhood manually."))
+        }
+      >
+        {t("nearby")}
+      </button>
+      {locationError && <ErrorBox error={locationError} />}{" "}
+      {filters.latitude && (
+        <button
+          onClick={() => {
+            setCursors([null]);
+            setFilters((f) => ({ ...f, latitude: "", longitude: "", page: 1 }));
+          }}
+        >
+          {t("removeLocation")}
+        </button>
+      )}
+      <SaveSearch query={query} />
       <section className="hero">
         <div>
           <p className="eyebrow">
@@ -108,13 +174,13 @@ export function Browse() {
         <div className="hero-art" aria-hidden="true">
           <div className="art-circle" />
           <div className="art-ticket">
-            <span>SECOND HAND.</span>
-            <strong>First choice.</strong>
+            <span>{t("secondHand")}</span>
+            <strong>{t("firstChoice")}</strong>
             <Armchair size={86} strokeWidth={1.2} />
-            <span>ADDIS ABABA ↗</span>
+            <span>{t("addis")}</span>
           </div>
           <div className="art-tag">
-            A little less new.
+            {t("lessNew")}
             <br />A lot more possibility.
           </div>
           <div className="art-star">✳</div>
@@ -199,7 +265,11 @@ export function Browse() {
             className="text-button"
             onClick={() => {
               setQ("");
+              setCursors([null]);
               setFilters({
+                latitude: "",
+                longitude: "",
+                radiusKm: "10",
                 q: "",
                 category: "",
                 neighborhood: "",
@@ -225,7 +295,7 @@ export function Browse() {
         <div className="results">
           <div className="section-heading">
             <div>
-              <p className="eyebrow">ADDIS ABABA FINDS</p>
+              <p className="eyebrow">{t("addisFinds")}</p>
               <h2>{t("fresh")}</h2>
               {listings.data && (
                 <small>
@@ -270,9 +340,13 @@ export function Browse() {
                 <span>{filters.page}</span>
                 <button
                   disabled={!listings.data.hasMore}
-                  onClick={() =>
+                  onClick={() => (
+                    setCursors((c) => [
+                      ...c.slice(0, filters.page),
+                      listings.data?.nextCursor || null,
+                    ]),
                     setFilters((f) => ({ ...f, page: f.page + 1 }))
-                  }
+                  )}
                 >
                   {t("more")}
                 </button>

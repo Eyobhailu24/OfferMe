@@ -1,1 +1,33 @@
-{"expo":{"name":"OFFERME","slug":"offerme","scheme":"offerme","version":"0.1.0","orientation":"portrait","userInterfaceStyle":"light","ios":{"supportsTablet":true,"bundleIdentifier":"com.offerme.marketplace"},"android":{"package":"com.offerme.marketplace"},"plugins":["expo-router","expo-secure-store",["expo-image-picker",{"photosPermission":"OFFERME uses photos you choose to create your listings.","cameraPermission":false,"microphonePermission":false}]],"experiments":{"typedRoutes":false}}}
+{
+  "expo": {
+    "name": "OFFERME",
+    "slug": "offerme",
+    "scheme": "offerme",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.offerme.marketplace"
+    },
+    "android": {
+      "package": "com.offerme.marketplace"
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "OFFERME uses photos you choose to create your listings.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
+      ],
+      "expo-sqlite"
+    ],
+    "experiments": {
+      "typedRoutes": false
+    }
+  }
+}

@@ -1,10 +1,12 @@
 "use client";
+import { useLocale } from "@/components/provider";
 export default function ErrorPage({ reset }: { reset: () => void }) {
+  const { t } = useLocale();
   return (
     <div className="empty">
-      <h1>Something went wrong.</h1>
+      <h1>{t("generalError")}</h1>
       <button className="button primary" onClick={reset}>
-        Try again
+        {t("retry")}
       </button>
     </div>
   );

@@ -26,7 +26,12 @@ export function SignIn() {
           phoneNumber: number,
           code,
         });
-        await cache.invalidateQueries({ queryKey: ["me"] });
+        await cache.cancelQueries();
+        cache.clear();
+        await cache.fetchQuery({
+          queryKey: ["me"],
+          queryFn: () => api("/v1/me"),
+        });
         router.push("/account");
       }
     },

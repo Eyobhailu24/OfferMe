@@ -18,9 +18,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const path = usePathname();
   return (
     <>
+      <a className="skip" href="#main">
+        {t("skipContent")}
+      </a>
       <div className="utility">
         <span>
-          <MapPin size={13} /> Addis Ababa, Ethiopia
+          <MapPin size={13} /> {t("addisEthiopia")}
         </span>
         <span>{t("noDelivery")}</span>
         <select
@@ -34,14 +37,14 @@ export function Shell({ children }: { children: React.ReactNode }) {
         </select>
       </div>
       <header className="header">
-        <Link href="/" className="logo" aria-label="OFFERME home">
+        <Link href="/" className="logo" aria-label={t("home")}>
           <span className="logo-icon">
             <Store size={24} />
           </span>
           offer<span>me</span>
           <i>•</i>
         </Link>
-        <nav aria-label="Main navigation">
+        <nav aria-label={t("navigation")}>
           <Link className={path === "/" ? "selected" : ""} href="/">
             {t("browse")}
           </Link>

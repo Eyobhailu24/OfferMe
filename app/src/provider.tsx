@@ -16,10 +16,11 @@ import * as SecureStore from "expo-secure-store";
 import { translate } from "../locale";
 import type { Locale, User } from "../types";
 import { api, ApiError } from "./api";
+import { LocalSync } from "./sync";
 const Context = createContext({
   locale: "en" as Locale,
   setLocale: (_value: Locale) => {},
-  t: (key: string) => key,
+  t: (key: string) => translate("en", key),
 });
 export const useLocale = () => useContext(Context);
 export const useUser = () =>
@@ -66,6 +67,7 @@ export function Providers({ children }: { children: ReactNode }) {
       <Context.Provider
         value={{ locale, setLocale, t: (key) => translate(locale, key) }}
       >
+        <LocalSync />
         {children}
       </Context.Provider>
     </QueryClientProvider>

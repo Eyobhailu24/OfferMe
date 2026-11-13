@@ -1,3 +1,7 @@
+import { keepPhoto, removePhoto, type PendingPhoto } from "./photo-queue";
+import * as Location from "expo-location";
+import { useDraft } from "./persistence";
+import * as Crypto from "expo-crypto";
 import { useState } from "react";
 import {
   Image,
@@ -10,7 +14,7 @@ import {
 import { router } from "expo-router";
 import * as ImagePicker from "expo-image-picker";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api, imageUrl } from "./api";
+import { api, imageUrl, parsePrice } from "./api";
 import { useLocale, useUser } from "./provider";
 import type { Catalog, Listing } from "../types";
 import {
@@ -27,7 +31,7 @@ export function Sell({ id }: { id?: string }) {
   const user = useUser();
   const listing = useQuery({
     queryKey: ["listing", id],
-    queryFn: () => api<Listing>("/v1/listings/" + id),
+    queryFn: () => api<Listing>("/v1/listings/" + id + "/edit"),
     enabled: !!id && !!user.data,
   });
   return (
@@ -39,7 +43,10 @@ export function Sell({ id }: { id?: string }) {
           <ErrorBox error={listing.error} />
         </Screen>
       ) : (
-        <Form key={id || "new"} initial={listing.data} />
+        <Form
+          key={user.data?.id + ":" + (id || "new")}
+          initial={listing.data}
+        />
       )}
     </Gate>
   );
@@ -48,8 +55,25 @@ function Form({ initial }: { initial?: Listing }) {
   const { t, locale } = useLocale();
   const cache = useQueryClient();
   const user = useUser();
-  const [images, setImages] = useState(initial?.images || []);
-  const [draft, setDraft] = useState({
+  const draftKey =
+    "offerme:draft:" + user.data!.id + ":" + (initial?.id || "new");
+  const imageDraft = useDraft<string[]>(
+    draftKey + ":photos",
+    initial?.images || [],
+  );
+  const images = imageDraft.value,
+    setImages = imageDraft.setValue;
+  const pendingUploads = useDraft<PendingPhoto[]>(
+    draftKey + ":pending-photos",
+    [],
+  );
+  const identity = useDraft(draftKey + ":identity", Crypto.randomUUID());
+  const clientId = identity.value;
+  const savedDraft = useDraft(draftKey, {
+    latitude: initial?.latitude as number | null | undefined,
+    longitude: initial?.longitude as number | null | undefined,
+    subcategory: initial?.subcategory || "",
+    attributes: initial?.attributes || ({} as Record<string, string>),
     title: initial?.title || "",
     description: initial?.description || "",
     defects: initial?.defects || "",
@@ -64,35 +88,88 @@ function Form({ initial }: { initial?: Listing }) {
     queryFn: () => api<Catalog>("/v1/catalog"),
     staleTime: Infinity,
   });
+  const draft = savedDraft.value,
+    setDraft = savedDraft.setValue;
   const update = (key: string, value: string | boolean) =>
-    setDraft((d) => ({ ...d, [key]: value }));
+    setDraft((d) => ({
+      ...d,
+      [key]: value,
+      ...(key === "categoryId" ? { subcategory: "", attributes: {} } : {}),
+    }));
+  const selectedCategory = catalog.data?.categories.find(
+    (c) => c.id === draft.categoryId,
+  );
+  const attribute = (key: string, value: string) =>
+    setDraft((d) => ({ ...d, attributes: { ...d.attributes, [key]: value } }));
+  const locate = useMutation({
+    mutationFn: async () => {
+      const permission = await Location.requestForegroundPermissionsAsync();
+      if (permission.status !== "granted")
+        throw new Error(
+          "Location permission was not granted. Select a neighborhood manually.",
+        );
+      const point = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+      setDraft((d) => ({
+        ...d,
+        latitude: point.coords.latitude,
+        longitude: point.coords.longitude,
+      }));
+    },
+  });
+  async function flushPhotos(photos: PendingPhoto[] = pendingUploads.value) {
+    for (const photo of photos) {
+      const body = new FormData();
+      body.append("clientId", photo.id);
+      body.append("expectedOwnerId", user.data!.id);
+      body.append("file", {
+        uri: photo.uri,
+        name: photo.name,
+        type: photo.type,
+      } as unknown as Blob);
+      const response = await api<{ url: string }>("/v1/media", "POST", body);
+      setImages((items) =>
+        items.includes(response.url) ? items : [...items, response.url],
+      );
+      pendingUploads.setValue((items) =>
+        items.filter((p) => p.id !== photo.id),
+      );
+      removePhoto(photo);
+    }
+  }
+  const retryUploads = useMutation({ mutationFn: () => flushPhotos() });
   const upload = useMutation({
+    networkMode: "always",
     mutationFn: async () => {
       const result = await ImagePicker.launchImageLibraryAsync({
         mediaTypes: ["images"],
         allowsMultipleSelection: true,
-        selectionLimit: 12 - images.length,
+        selectionLimit: 12 - images.length - pendingUploads.value.length,
         quality: 0.8,
       });
       if (result.canceled) return;
-      if (images.length + result.assets.length > 12)
+      if (
+        images.length + pendingUploads.value.length + result.assets.length >
+        12
+      )
         throw new Error("Choose up to 12 photos.");
+      const kept: PendingPhoto[] = [];
       for (const asset of result.assets) {
         if (asset.fileSize && asset.fileSize > 8 * 1024 * 1024)
           throw new Error("Choose photos under 8 MB.");
-        const body = new FormData();
-        body.append("file", {
-          uri: asset.uri,
-          name: asset.fileName || "photo.jpg",
-          type: asset.mimeType || "image/jpeg",
-        } as unknown as Blob);
-        const response = await api<{ url: string }>("/v1/media", "POST", body);
-        setImages((i) => [...i, response.url]);
+        const photo = await keepPhoto(asset);
+        kept.push(photo);
+        pendingUploads.setValue((items) => [...items, photo]);
       }
+      await flushPhotos([...pendingUploads.value, ...kept]);
     },
   });
   const publish = useMutation({
+    networkMode: "always",
     mutationFn: () => {
+      if (pendingUploads.value.length)
+        throw new Error("Finish or remove pending photo uploads first.");
       if (!images.length) throw new Error("Add at least one photo.");
       if (draft.price.trim() === "" || !Number.isFinite(Number(draft.price)))
         throw new Error("Enter a price.");
@@ -100,29 +177,39 @@ function Form({ initial }: { initial?: Listing }) {
       return api<{ id: string }>(
         "/v1/listings" + (initial ? "/" + initial.id : ""),
         initial ? "PATCH" : "POST",
-        { ...rest, priceMinor: Math.round(Number(price) * 100), images },
+        {
+          ...rest,
+          expectedSellerId: user.data!.id,
+          priceMinor: parsePrice(price),
+          images,
+          ...(!initial ? { clientId } : {}),
+        },
       );
     },
     onSuccess: async (r) => {
+      pendingUploads.clear();
+      savedDraft.clear();
+      imageDraft.clear();
+      identity.clear();
+      if (!initial) {
+        pendingUploads.reset();
+        savedDraft.reset();
+        imageDraft.reset();
+        identity.reset(Crypto.randomUUID());
+      }
       await cache.invalidateQueries({ queryKey: ["listings"] });
       await cache.invalidateQueries({ queryKey: ["mine"] });
       await cache.invalidateQueries({ queryKey: ["listing", r.id] });
-      if (!initial) {
-        setImages([]);
-        setDraft({
-          title: "",
-          description: "",
-          defects: "",
-          price: "",
-          categoryId: "phones",
-          condition: "good",
-          neighborhood: "Bole",
-          negotiable: true,
-        });
-      }
       router.push("/items/" + r.id);
     },
   });
+  if (
+    !savedDraft.ready ||
+    !imageDraft.ready ||
+    !identity.ready ||
+    !pendingUploads.ready
+  )
+    return <Loading />;
   if (
     initial &&
     (initial.sellerId !== user.data?.id ||
@@ -137,6 +224,23 @@ function Form({ initial }: { initial?: Listing }) {
       <Screen>
         <Text style={s.heading}>{t(initial ? "edit" : "sell")}</Text>
         <Text style={s.muted}>{t("noDelivery")}</Text>
+        {!savedDraft.error && !imageDraft.error && !pendingUploads.error && (
+          <Text style={s.muted}>{t("draftSaved")}</Text>
+        )}
+        <Button
+          title={t("discardDraft")}
+          secondary
+          onPress={() => {
+            for (const p of pendingUploads.value) removePhoto(p);
+            pendingUploads.reset();
+            savedDraft.reset();
+            imageDraft.reset();
+            identity.reset(Crypto.randomUUID());
+          }}
+        />
+        {(savedDraft.error || imageDraft.error) && (
+          <ErrorBox error={savedDraft.error || imageDraft.error} />
+        )}
         <Text style={s.h2}>
           {t("photos")} · {images.length}/12
         </Text>
@@ -158,10 +262,45 @@ function Form({ initial }: { initial?: Listing }) {
         <Button
           title={upload.isPending ? t("loading") : t("addPhotos")}
           secondary
-          disabled={upload.isPending || images.length >= 12}
+          disabled={
+            upload.isPending ||
+            retryUploads.isPending ||
+            images.length + pendingUploads.value.length >= 12
+          }
           onPress={() => upload.mutate()}
         />
-        {upload.error && <ErrorBox error={upload.error} />}
+        {pendingUploads.value.map((photo) => (
+          <View key={photo.id} style={s.card}>
+            <Image
+              source={{ uri: photo.uri }}
+              style={{ width: 90, height: 90 }}
+            />
+            <Text style={s.body}>{t("photosPending")}</Text>
+            <Button
+              title={t("delete")}
+              secondary
+              onPress={() => {
+                removePhoto(photo);
+                pendingUploads.setValue((items) =>
+                  items.filter((p) => p.id !== photo.id),
+                );
+              }}
+            />
+          </View>
+        ))}
+        {!!pendingUploads.value.length && (
+          <Button
+            title={t("retry")}
+            secondary
+            disabled={retryUploads.isPending || upload.isPending}
+            onPress={() => retryUploads.mutate()}
+          />
+        )}
+        {(upload.error || retryUploads.error || pendingUploads.error) && (
+          <ErrorBox
+            error={upload.error || retryUploads.error || pendingUploads.error}
+          />
+        )}
         <Field
           label={t("title")}
           value={draft.title}
@@ -179,6 +318,41 @@ function Form({ initial }: { initial?: Listing }) {
             })) || []
           }
         />
+        {selectedCategory && (
+          <>
+            <Choice
+              label={t("subcategory")}
+              value={draft.subcategory}
+              onChange={(v) => update("subcategory", v)}
+              options={selectedCategory.subcategories.map((v) => ({
+                value: v,
+                label: t(v),
+              }))}
+            />
+            {selectedCategory.fields.map((field) =>
+              field.options ? (
+                <Choice
+                  key={field.id}
+                  label={t(field.id)}
+                  value={draft.attributes[field.id] || ""}
+                  onChange={(v) => attribute(field.id, v)}
+                  options={field.options.map((v) => ({
+                    value: v,
+                    label: t(v),
+                  }))}
+                />
+              ) : (
+                <Field
+                  key={field.id}
+                  label={t(field.id)}
+                  value={draft.attributes[field.id] || ""}
+                  onChangeText={(v) => attribute(field.id, v)}
+                  maxLength={250}
+                />
+              ),
+            )}
+          </>
+        )}
         <Choice
           label={t("condition")}
           value={draft.condition}
@@ -217,6 +391,22 @@ function Form({ initial }: { initial?: Listing }) {
             []
           }
         />
+        <Button
+          title={t("useLocation")}
+          secondary
+          disabled={locate.isPending}
+          onPress={() => locate.mutate()}
+        />
+        {locate.error && <ErrorBox error={locate.error} />}
+        {draft.latitude != null && (
+          <Button
+            title={t("removeLocation")}
+            secondary
+            onPress={() =>
+              setDraft((d) => ({ ...d, latitude: null, longitude: null }))
+            }
+          />
+        )}
         <View style={s.row}>
           <Switch
             accessibilityLabel={t("negotiable")}
@@ -237,7 +427,13 @@ function Form({ initial }: { initial?: Listing }) {
           title={
             publish.isPending ? t("loading") : t(initial ? "save" : "publish")
           }
-          disabled={publish.isPending || upload.isPending || !catalog.data}
+          disabled={
+            publish.isPending ||
+            upload.isPending ||
+            retryUploads.isPending ||
+            !!pendingUploads.value.length ||
+            !catalog.data
+          }
           onPress={() => publish.mutate()}
         />
       </Screen>

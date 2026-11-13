@@ -7,10 +7,12 @@
     "dev": "next dev --hostname 127.0.0.1 --port 3100",
     "build": "next build",
     "start": "next start --hostname 127.0.0.1 --port 3100",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "contracts": "openapi-typescript http://127.0.0.1:4100/openapi.json -o src/api/generated/schema.d.ts",
     "test:e2e": "playwright test",
-    "format": "prettier --write src tests playwright.config.ts next.config.ts"
+    "format": "prettier --write src tests playwright.config.ts next.config.ts",
+    "test:unit": "node --experimental-strip-types --test tests/unit/*.test.mjs",
+    "check:locales": "node scripts/check-locales.mjs"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.104.3",

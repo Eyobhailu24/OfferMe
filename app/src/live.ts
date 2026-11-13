@@ -13,6 +13,10 @@ export function useLive(userId?: string) {
       .then((cookie) => {
         if (cancelled) return;
         socket = io(API_URL, { auth: { cookie }, transports: ["websocket"] });
+        socket.on("connect", () => {
+          void cache.invalidateQueries({ queryKey: ["thread"] });
+          void cache.invalidateQueries({ queryKey: ["conversations"] });
+        });
         socket.on("conversation.updated", () => {
           void cache.invalidateQueries({ queryKey: ["conversations"] });
           void cache.invalidateQueries({ queryKey: ["thread"] });

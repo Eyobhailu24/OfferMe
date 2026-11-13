@@ -1,3 +1,4 @@
+import * as Crypto from "expo-crypto";
 import { Platform } from "react-native";
 import { createAuthClient } from "better-auth/react";
 import { phoneNumberClient } from "better-auth/client/plugins";
@@ -20,6 +21,21 @@ export const auth = createAuthClient({
     }),
   ],
 });
+let verifiedProfile: { id: string; cookie: string } | undefined;
+export async function currentSessionFingerprint() {
+  const cookie = await auth.getCookie();
+  return cookie
+    ? Crypto.digestStringAsync(Crypto.CryptoDigestAlgorithm.SHA256, cookie)
+    : null;
+}
+export async function verifiedProfileFingerprint(userId: string) {
+  return verifiedProfile?.id === userId && verifiedProfile.cookie
+    ? Crypto.digestStringAsync(
+        Crypto.CryptoDigestAlgorithm.SHA256,
+        verifiedProfile.cookie,
+      )
+    : null;
+}
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -35,7 +51,10 @@ export async function api<T>(
 ): Promise<T> {
   const cookie = await auth.getCookie();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 15000);
+  const timeout = setTimeout(
+    () => controller.abort(),
+    body instanceof FormData ? 120000 : 15000,
+  );
   try {
     const response = await fetch(API_URL + path, {
       signal: controller.signal,
@@ -61,6 +80,8 @@ export async function api<T>(
         data.message || "Could not connect. Please try again.",
         response.status,
       );
+    if (path === "/v1/me" && typeof data.id === "string" && cookie)
+      verifiedProfile = { id: data.id, cookie };
     return data as T;
   } catch (error) {
     if (controller.signal.aborted)
@@ -87,4 +108,14 @@ export function phoneNumber(raw: string) {
   if (!/^\+251[79]\d{8}$/.test(phone))
     throw new Error("Enter a valid Ethiopian mobile number.");
   return phone;
+}
+
+export function parsePrice(raw: string) {
+  const value = raw.trim();
+  if (!/^\d{1,8}(\.\d{1,2})?$/.test(value))
+    throw new Error("Enter a valid price with up to two decimal places.");
+  const [whole, fraction = ""] = value.split(".");
+  const minor = Number(whole) * 100 + Number(fraction.padEnd(2, "0"));
+  if (minor > 2_000_000_000) throw new Error("The price is too high.");
+  return minor;
 }
